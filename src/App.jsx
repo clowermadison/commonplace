@@ -336,6 +336,7 @@ function BookView({ book: initialBook, onBack, onBookChanged }) {
   const [bookDraft, setBookDraft] = useState({ title: "", author: "", tags: "" });
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState({ text: "", commentary: "", chapter: "", page: "" });
+  const [confirmEntryId, setConfirmEntryId] = useState(null);
 
   useEffect(() => {
     Promise.all([db.listEntries(book.id), db.listLog(book.id)])
@@ -402,6 +403,7 @@ function BookView({ book: initialBook, onBack, onBookChanged }) {
   const removeEntry = guard(async (id) => {
     await db.deleteEntry(id);
     setEntries(entries.filter((e) => e.id !== id));
+    setConfirmEntryId(null);
   });
 
   const removeBook = guard(async () => {
@@ -602,7 +604,7 @@ function BookView({ book: initialBook, onBack, onBookChanged }) {
                     ✎
                   </button>
                   <button
-                    onClick={() => removeEntry(e.id)}
+                    onClick={() => setConfirmEntryId(e.id)}
                     style={{ background: "none", border: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 13, padding: 0 }}
                     aria-label="Delete entry"
                   >
@@ -610,6 +612,15 @@ function BookView({ book: initialBook, onBack, onBookChanged }) {
                   </button>
                 </span>
               </div>
+              {confirmEntryId === e.id && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, color: "var(--rust)", flex: 1 }}>Delete this {e.type}?</span>
+                  <button className="chip" style={{ background: "var(--rust)", borderColor: "var(--rust)", color: "#fff" }} onClick={() => removeEntry(e.id)}>
+                    Yes, delete
+                  </button>
+                  <button className="chip" onClick={() => setConfirmEntryId(null)}>Keep</button>
+                </div>
+              )}
               {e.type === "quote" ? (
                 <>
                   <p className="display" style={{ margin: 0, fontStyle: "italic", fontSize: 16.5, lineHeight: 1.55 }}>

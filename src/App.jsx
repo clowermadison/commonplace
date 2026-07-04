@@ -93,6 +93,7 @@ function AuthScreen() {
 
   return (
     <div style={{ paddingTop: 60 }}>
+      <img src="/icons/icon-192.png" alt="" style={{ width: 76, height: 76, display: "block", marginBottom: 16 }} />
       <h1 className="display" style={{ fontSize: 34, margin: "0 0 4px" }}>Commonplace</h1>
       <div className="eyebrow" style={{ marginBottom: 28 }}>reading &amp; marginalia</div>
       <div className="card" style={{ padding: 18 }}>
@@ -190,8 +191,11 @@ function Shell() {
 function Header({ tab, setTab }) {
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-        <h1 className="display" style={{ fontSize: 30, margin: 0 }}>Commonplace</h1>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <img src="/icons/icon-192.png" alt="" style={{ width: 34, height: 34 }} />
+          <h1 className="display" style={{ fontSize: 30, margin: 0 }}>Commonplace</h1>
+        </span>
         <span className="eyebrow">reading &amp; marginalia</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", marginTop: 14 }}>

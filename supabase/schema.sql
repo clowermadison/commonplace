@@ -6,6 +6,7 @@ create table public.books (
   title text not null,
   author text default '',
   status text not null default 'reading' check (status in ('reading','finished','wishlist')),
+  tags text[] not null default '{}',
   bookmark text default '',
   created_at timestamptz not null default now()
 );

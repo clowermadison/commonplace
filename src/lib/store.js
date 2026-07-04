@@ -18,11 +18,11 @@ export async function listBooks() {
   return data.map((b) => ({ ...b, entryCount: b.entries?.[0]?.count ?? 0 }));
 }
 
-export async function addBook({ title, author, status }) {
+export async function addBook({ title, author, status, tags = [] }) {
   const user_id = await uidOrThrow();
   const { data, error } = await supabase
     .from("books")
-    .insert({ user_id, title, author, status })
+    .insert({ user_id, title, author, status, tags })
     .select()
     .single();
   if (error) throw error;
@@ -123,7 +123,7 @@ export async function saveSynthesis(payload) {
 export async function allEntriesByBook() {
   const { data, error } = await supabase
     .from("books")
-    .select("id, title, author, entries(id, type, text, commentary, chapter, page)")
+    .select("id, title, author, tags, entries(id, type, text, commentary, chapter, page)")
     .order("created_at", { ascending: false });
   if (error) throw error;
   return data.filter((b) => (b.entries || []).length > 0);

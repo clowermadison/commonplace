@@ -21,6 +21,11 @@ const fmtWhen = (ts) =>
 const whereLabel = (e) =>
   [e.chapter ? `Ch. ${e.chapter}` : null, e.page ? `p. ${e.page}` : null].filter(Boolean).join(" · ");
 
+const parseTags = (s) =>
+  [...new Set(String(s).split(",").map((t) => t.trim().toLowerCase()).filter(Boolean))];
+
+const tagsOf = (books) => [...new Set(books.flatMap((b) => b.tags || []))].sort();
+
 /* ————— Root ————— */
 
 export default function App() {
@@ -197,6 +202,8 @@ function Library({ books, onOpen, onChanged }) {
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [status, setStatus] = useState("reading");
+  const [tags, setTags] = useState("");
+  const [filterTag, setFilterTag] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -205,9 +212,10 @@ function Library({ books, onOpen, onChanged }) {
     setBusy(true);
     setError("");
     try {
-      await db.addBook({ title: title.trim(), author: author.trim(), status });
+      await db.addBook({ title: title.trim(), author: author.trim(), status, tags: parseTags(tags) });
       setTitle("");
       setAuthor("");
+      setTags("");
       setAdding(false);
       onChanged();
     } catch (e) {
@@ -216,7 +224,9 @@ function Library({ books, onOpen, onChanged }) {
     setBusy(false);
   };
 
-  const groups = STATUSES.map((s) => ({ ...s, books: books.filter((b) => b.status === s.key) })).filter(
+  const allTags = tagsOf(books);
+  const shown = filterTag ? books.filter((b) => (b.tags || []).includes(filterTag)) : books;
+  const groups = STATUSES.map((s) => ({ ...s, books: shown.filter((b) => b.status === s.key) })).filter(
     (g) => g.books.length
   );
 
@@ -227,6 +237,16 @@ function Library({ books, onOpen, onChanged }) {
           <div className="eyebrow" style={{ marginBottom: 10 }}>New book</div>
           <input className="field" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
           <input className="field" placeholder="Author" value={author} onChange={(e) => setAuthor(e.target.value)} />
+          <input className="field" placeholder="Tags — comma separated, e.g. basketball, memoir" value={tags} onChange={(e) => setTags(e.target.value)} />
+          {allTags.filter((t) => !parseTags(tags).includes(t)).length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "0 0 10px" }}>
+              {allTags.filter((t) => !parseTags(tags).includes(t)).map((t) => (
+                <button key={t} className="chip" onClick={() => setTags(tags.trim() ? `${tags.replace(/,\s*$/, "")}, ${t}` : t)}>
+                  + {t}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 6, margin: "4px 0 14px" }}>
             {STATUSES.map((s) => (
               <button key={s.key} className={`chip ${status === s.key ? "chip-on" : ""}`} onClick={() => setStatus(s.key)}>
@@ -246,6 +266,20 @@ function Library({ books, onOpen, onChanged }) {
         <button className="btn btn-primary" style={{ width: "100%", marginBottom: 18 }} onClick={() => setAdding(true)}>
           + Add a book
         </button>
+      )}
+
+      {allTags.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
+          <button className={`chip ${!filterTag ? "chip-on" : ""}`} onClick={() => setFilterTag(null)}>
+            All
+          </button>
+          {allTags.map((t) => (
+            <button key={t} className={`chip ${filterTag === t ? "chip-on" : ""}`}
+              onClick={() => setFilterTag(filterTag === t ? null : t)}>
+              {t}
+            </button>
+          ))}
+        </div>
       )}
 
       {books.length === 0 && !adding && (
@@ -271,6 +305,7 @@ function Library({ books, onOpen, onChanged }) {
                 <span style={{ fontSize: 13, color: "var(--ink-soft)" }}>
                   {b.author || "Unknown author"} · {b.entryCount} {b.entryCount === 1 ? "entry" : "entries"}
                   {b.bookmark ? <span style={{ color: "var(--gilt-deep)", fontWeight: 600 }}> · 🔖 {b.bookmark}</span> : null}
+                  {(b.tags || []).length > 0 && <span style={{ fontStyle: "italic" }}> · {b.tags.join(", ")}</span>}
                 </span>
               </span>
               <span style={{ color: "var(--gilt)", fontSize: 18 }}>›</span>
@@ -298,7 +333,7 @@ function BookView({ book: initialBook, onBack, onBookChanged }) {
   const [bookmark, setBookmark] = useState(initialBook.bookmark || "");
   const [showLog, setShowLog] = useState(false);
   const [editingBook, setEditingBook] = useState(false);
-  const [bookDraft, setBookDraft] = useState({ title: "", author: "" });
+  const [bookDraft, setBookDraft] = useState({ title: "", author: "", tags: "" });
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState({ text: "", commentary: "", chapter: "", page: "" });
 
@@ -404,9 +439,11 @@ function BookView({ book: initialBook, onBack, onBookChanged }) {
               onChange={(e) => setBookDraft({ ...bookDraft, title: e.target.value })} autoFocus />
             <input className="field" placeholder="Author" value={bookDraft.author}
               onChange={(e) => setBookDraft({ ...bookDraft, author: e.target.value })} />
+            <input className="field" placeholder="Tags — comma separated, e.g. basketball, memoir" value={bookDraft.tags}
+              onChange={(e) => setBookDraft({ ...bookDraft, tags: e.target.value })} />
             <div style={{ display: "flex", gap: 8 }}>
               <button className="btn btn-primary" disabled={!bookDraft.title.trim()}
-                onClick={() => { patchBook({ title: bookDraft.title.trim(), author: bookDraft.author.trim() }); setEditingBook(false); }}>
+                onClick={() => { patchBook({ title: bookDraft.title.trim(), author: bookDraft.author.trim(), tags: parseTags(bookDraft.tags) }); setEditingBook(false); }}>
                 Save
               </button>
               <button className="btn" onClick={() => setEditingBook(false)}>Cancel</button>
@@ -417,8 +454,13 @@ function BookView({ book: initialBook, onBack, onBookChanged }) {
             <div style={{ flex: 1 }}>
               <h2 className="display" style={{ margin: "0 0 2px", fontSize: 24 }}>{book.title}</h2>
               <div style={{ color: "var(--ink-soft)", fontSize: 14 }}>{book.author || "Unknown author"}</div>
+              {(book.tags || []).length > 0 && (
+                <div style={{ color: "var(--gilt-deep)", fontSize: 13, fontStyle: "italic", marginTop: 2 }}>
+                  {book.tags.join(" · ")}
+                </div>
+              )}
             </div>
-            <button className="chip" onClick={() => { setBookDraft({ title: book.title, author: book.author || "" }); setEditingBook(true); }}>
+            <button className="chip" onClick={() => { setBookDraft({ title: book.title, author: book.author || "", tags: (book.tags || []).join(", ") }); setEditingBook(true); }}>
               ✎ Edit
             </button>
           </div>
@@ -696,19 +738,38 @@ function Threads() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [threads, setThreads] = useState(undefined);
+  const [shelf, setShelf] = useState([]);
+  const [selTags, setSelTags] = useState([]);
+  const [selBooks, setSelBooks] = useState([]);
+  const [pickBooks, setPickBooks] = useState(false);
 
   useEffect(() => {
     db.latestSynthesis()
       .then((row) => setThreads(row ? { ...row.payload, generatedAt: row.created_at } : null))
       .catch((e) => setError("Couldn't load past syntheses: " + e.message));
+    db.allEntriesByBook()
+      .then(setShelf)
+      .catch(() => {});
   }, []);
+
+  const toggle = (list, set, v) => set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+  const allTags = tagsOf(shelf);
+  const scoped = (list) =>
+    selTags.length || selBooks.length
+      ? list.filter((b) => selBooks.includes(b.id) || (b.tags || []).some((t) => selTags.includes(t)))
+      : list;
 
   const weave = async () => {
     setBusy(true);
     setError("");
     try {
-      const books = await db.allEntriesByBook();
-      if (books.length === 0) throw new Error("Add notes or quotes to at least one book first.");
+      const books = scoped(await db.allEntriesByBook());
+      if (books.length === 0)
+        throw new Error(
+          selTags.length || selBooks.length
+            ? "No books with notes match your selection."
+            : "Add notes or quotes to at least one book first."
+        );
       const material = books
         .map((b) => {
           const lines = (b.entries || [])
@@ -736,10 +797,51 @@ function Threads() {
       <div className="card" style={{ padding: 16, marginBottom: 16 }}>
         <div className="eyebrow" style={{ marginBottom: 6 }}>Threads</div>
         <p style={{ margin: "0 0 12px", fontSize: 14.5, lineHeight: 1.5, color: "var(--ink-soft)" }}>
-          Pulls every note and quote off your shelf and stitches them into shared themes across books.
+          Pulls notes and quotes off your shelf and stitches them into shared themes across books. Narrow the weave by
+          tag or book, or leave everything unselected to weave the whole shelf.
         </p>
+
+        {allTags.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Tags</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {allTags.map((tag) => (
+                <button key={tag} className={`chip ${selTags.includes(tag) ? "chip-on" : ""}`}
+                  onClick={() => toggle(selTags, setSelTags, tag)}>
+                  {tag}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {shelf.length > 1 && (
+          <div style={{ marginBottom: 12 }}>
+            <button className="eyebrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
+              onClick={() => setPickBooks(!pickBooks)}>
+              Books ({selBooks.length ? `${selBooks.length} picked` : "all"}) {pickBooks ? "▾" : "▸"}
+            </button>
+            {pickBooks && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {shelf.map((b) => (
+                  <button key={b.id} className={`chip ${selBooks.includes(b.id) ? "chip-on" : ""}`}
+                    onClick={() => toggle(selBooks, setSelBooks, b.id)}>
+                    {b.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <button className="btn btn-gilt" style={{ width: "100%" }} onClick={weave} disabled={busy}>
-          {busy ? "Weaving your notes together…" : t ? "Re-weave with latest notes" : "Weave my notes into themes"}
+          {busy
+            ? "Weaving your notes together…"
+            : selTags.length || selBooks.length
+            ? `Weave ${scoped(shelf).length} ${scoped(shelf).length === 1 ? "book" : "books"} into themes`
+            : t
+            ? "Re-weave with latest notes"
+            : "Weave my notes into themes"}
         </button>
         {error && <div style={{ color: "var(--rust)", fontSize: 13, marginTop: 8 }}>{error}</div>}
       </div>

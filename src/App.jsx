@@ -18,6 +18,22 @@ const STATUSES = [
 const fmtWhen = (ts) =>
   new Date(ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
+const fmtTime = (ts) => new Date(ts).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+const fmtDay = (ts) => {
+  const d = new Date(ts);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === now.toDateString()) return "Today";
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, {
+    month: "long",
+    day: "numeric",
+    year: d.getFullYear() === now.getFullYear() ? undefined : "numeric",
+  });
+};
+
 const whereLabel = (e) =>
   [e.chapter ? `Ch. ${e.chapter}` : null, e.page ? `p. ${e.page}` : null].filter(Boolean).join(" · ");
 
@@ -158,6 +174,8 @@ function Shell() {
           <Header tab={tab} setTab={setTab} />
           {tab === "library" ? (
             <Library books={books || []} onOpen={setOpenBookId} onChanged={refreshBooks} />
+          ) : tab === "journal" ? (
+            <Journal books={books || []} />
           ) : tab === "threads" ? (
             <Threads />
           ) : (
@@ -177,7 +195,7 @@ function Header({ tab, setTab }) {
         <span className="eyebrow">reading &amp; marginalia</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", marginTop: 14 }}>
-        {[["library", "Library"], ["threads", "Threads"]].map(([k, label]) => (
+        {[["library", "Library"], ["journal", "Journal"], ["threads", "Threads"]].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)} className={`tab ${tab === k ? "tab-on" : ""}`}>
             {label}
           </button>
@@ -743,6 +761,293 @@ function QuoteCapture({ onSave }) {
   );
 }
 
+/* ————— Journal ————— */
+
+function Journal({ books }) {
+  const [items, setItems] = useState(null);
+  const [recaps, setRecaps] = useState([]);
+  const [text, setText] = useState("");
+  const [linkId, setLinkId] = useState(null);
+  const [showLink, setShowLink] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [nudging, setNudging] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [recapBusy, setRecapBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [confirmId, setConfirmId] = useState(null);
+
+  useEffect(() => {
+    Promise.all([db.listJournal(), db.listRecaps()])
+      .then(([j, r]) => {
+        setItems(j);
+        setRecaps(r);
+      })
+      .catch((e) => setError("Couldn't load your journal: " + e.message));
+  }, []);
+
+  const guard = (fn) => async (...args) => {
+    setError("");
+    try {
+      await fn(...args);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const save = guard(async () => {
+    setBusy(true);
+    try {
+      const row = await db.addJournalEntry({ text: text.trim(), book_id: linkId, prompt });
+      setItems([row, ...items]);
+      setText("");
+      setLinkId(null);
+      setShowLink(false);
+      setPrompt("");
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  const saveEdit = guard(async (id) => {
+    const row = await db.updateJournalEntry(id, { text: editText.trim() });
+    setItems(items.map((j) => (j.id === id ? row : j)));
+    setEditingId(null);
+  });
+
+  const remove = guard(async (id) => {
+    await db.deleteJournalEntry(id);
+    setItems(items.filter((j) => j.id !== id));
+    setConfirmId(null);
+  });
+
+  const nudge = async () => {
+    setNudging(true);
+    setError("");
+    try {
+      const since = new Date(Date.now() - 14 * 864e5).toISOString();
+      const [recent, activity] = await Promise.all([db.journalSince(since), db.activitySince(since)]);
+      const material = [
+        recent.length
+          ? "Recent journal entries:\n" + recent.map((j) => `- [${new Date(j.created_at).toLocaleDateString()}] ${j.text}`).join("\n")
+          : "",
+        activity.entries.length
+          ? "Recent reading notes & quotes:\n" +
+            activity.entries.map((e) => `- (${e.type}${e.books?.title ? `, from "${e.books.title}"` : ""}) ${e.text}`).join("\n")
+          : "",
+        activity.log.length
+          ? "Recent reading progress:\n" + activity.log.map((l) => `- ${l.books?.title || "a book"}: ${l.mark}`).join("\n")
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const out = await askClaude(
+        `${material || "I haven't captured anything recently."}\n\nBased on the above — my recent journaling and reading life — offer ONE short reflective journal prompt for me. Make it specific to what I've been reading or thinking about if possible; otherwise a good general prompt. Respond ONLY with JSON, no markdown fences or preamble: {"prompt": "one question or invitation, 1-2 sentences, second person"}`
+      );
+      setPrompt(parseJSON(out).prompt);
+    } catch (e) {
+      setError("Couldn't fetch a prompt: " + e.message);
+    }
+    setNudging(false);
+  };
+
+  const lookBack = async (days, label) => {
+    setRecapBusy(true);
+    setError("");
+    try {
+      const from = new Date(Date.now() - days * 864e5).toISOString();
+      const [journal, activity] = await Promise.all([db.journalSince(from), db.activitySince(from)]);
+      if (!journal.length && !activity.entries.length && !activity.log.length)
+        throw new Error(`Nothing captured in the past ${label} to look back on.`);
+      const material = [
+        journal.length
+          ? "JOURNAL:\n" +
+            journal
+              .map((j) => `- [${new Date(j.created_at).toLocaleDateString()}] ${j.text}${j.books?.title ? ` (about "${j.books.title}")` : ""}`)
+              .join("\n")
+          : "",
+        activity.entries.length
+          ? "READING NOTES & QUOTES:\n" +
+            activity.entries.map((e) => `- (${e.type}${e.books?.title ? `, "${e.books.title}"` : ""}) ${e.text}`).join("\n")
+          : "",
+        activity.log.length
+          ? "READING PROGRESS:\n" +
+            activity.log.map((l) => `- ${l.books?.title || "a book"}: ${l.mark} (${new Date(l.at).toLocaleDateString()})`).join("\n")
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const out = await askClaude(
+        `Here is everything from my journal and reading life over the past ${label}:\n\n${material}\n\nWrite me a short look-back over this period. Respond ONLY with JSON, no markdown fences or preamble: {"reflection": "3-5 sentences in second person on what occupied you, how your thinking moved, and what you were reading", "highlights": ["2-4 short standout moments or ideas"]}`
+      );
+      const payload = { ...parseJSON(out), period: label };
+      const row = await db.saveRecap(payload);
+      setRecaps([row, ...recaps]);
+    } catch (e) {
+      setError("The look back didn't come together: " + e.message);
+    }
+    setRecapBusy(false);
+  };
+
+  if (items === null && !error) return <Centered>Opening your journal…</Centered>;
+
+  const feed = [
+    ...(items || []).map((j) => ({ kind: "entry", at: j.created_at, j })),
+    ...recaps.map((r) => ({ kind: "recap", at: r.created_at, r })),
+  ].sort((a, b) => new Date(b.at) - new Date(a.at));
+
+  const days = [];
+  for (const it of feed) {
+    const label = fmtDay(it.at);
+    if (!days.length || days[days.length - 1].label !== label) days.push({ label, items: [] });
+    days[days.length - 1].items.push(it);
+  }
+
+  return (
+    <div>
+      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+        <div className="eyebrow" style={{ marginBottom: 8 }}>New entry</div>
+        {prompt && (
+          <div
+            style={{
+              display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10, padding: "8px 10px",
+              borderLeft: "3px solid var(--gilt)", background: "var(--paper-dim)",
+              fontSize: 13.5, fontStyle: "italic", lineHeight: 1.5,
+            }}
+          >
+            <span style={{ flex: 1 }}>{prompt}</span>
+            <button onClick={() => setPrompt("")}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--ink-soft)", padding: 0 }}
+              aria-label="Dismiss prompt">
+              ✕
+            </button>
+          </div>
+        )}
+        <textarea className="field" rows={4} placeholder="What's on your mind today?" value={text} onChange={(e) => setText(e.target.value)} />
+        {showLink && books.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {books.map((b) => (
+              <button key={b.id} className={`chip ${linkId === b.id ? "chip-on" : ""}`}
+                onClick={() => setLinkId(linkId === b.id ? null : b.id)}>
+                {b.title}
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="btn btn-primary" disabled={!text.trim() || busy} onClick={save}>
+            {busy ? "Saving…" : "Save entry"}
+          </button>
+          {books.length > 0 && (
+            <button className="chip" onClick={() => setShowLink(!showLink)}>
+              {linkId ? `📖 ${books.find((b) => b.id === linkId)?.title || "Linked"}` : "Link a book"}
+            </button>
+          )}
+          <button className="chip" style={{ marginLeft: "auto" }} onClick={nudge} disabled={nudging}>
+            {nudging ? "Thinking…" : "Need a nudge?"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 18 }}>
+        <span className="eyebrow" style={{ flex: 1 }}>Look back</span>
+        <button className="chip" disabled={recapBusy} onClick={() => lookBack(7, "week")}>Past week</button>
+        <button className="chip" disabled={recapBusy} onClick={() => lookBack(30, "month")}>Past month</button>
+      </div>
+      {recapBusy && <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 12 }}>Reading back through your days…</div>}
+      {error && <div style={{ color: "var(--rust)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+      {feed.length === 0 && (
+        <div style={{ textAlign: "center", color: "var(--ink-soft)", padding: "40px 24px", fontSize: 14 }}>
+          <div className="display" style={{ fontSize: 20, color: "var(--ink)", marginBottom: 8 }}>A blank page</div>
+          Write your first entry above — about your day, your reading, anything at all.
+        </div>
+      )}
+
+      {days.map((d) => (
+        <div key={d.label} style={{ marginBottom: 20 }}>
+          <div className="eyebrow section-head" style={{ marginBottom: 10 }}>{d.label}</div>
+          {d.items.map((it) =>
+            it.kind === "recap" ? (
+              <div key={"r" + it.r.id} className="card" style={{ padding: 14, marginBottom: 10, background: "var(--paper-dim)" }}>
+                <div className="eyebrow" style={{ color: "var(--gilt-deep)", marginBottom: 6 }}>
+                  Look back — past {it.r.payload.period}
+                </div>
+                <p style={{ margin: "0 0 10px", fontSize: 14.5, lineHeight: 1.55 }}>{it.r.payload.reflection}</p>
+                {(it.r.payload.highlights || []).map((h, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, fontSize: 14, marginBottom: 5 }}>
+                    <span style={{ color: "var(--gilt)" }}>—</span>
+                    <span>{h}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div key={it.j.id} className="card" style={{ padding: 14, marginBottom: 10 }}>
+                {editingId === it.j.id ? (
+                  <div>
+                    <textarea className="field" rows={4} value={editText} onChange={(ev) => setEditText(ev.target.value)} autoFocus />
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button className="btn btn-primary" disabled={!editText.trim()} onClick={() => saveEdit(it.j.id)}>Save changes</button>
+                      <button className="btn" onClick={() => setEditingId(null)}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, gap: 8 }}>
+                      <span className="eyebrow" style={{ color: "var(--ink-soft)" }}>
+                        {fmtTime(it.j.created_at)}
+                        {it.j.edited_at ? " · edited" : ""}
+                        {it.j.books?.title ? (
+                          <span style={{ color: "var(--gilt-deep)" }}> · 📖 {it.j.books.title}</span>
+                        ) : null}
+                      </span>
+                      <span style={{ display: "flex", alignItems: "baseline", gap: 12, whiteSpace: "nowrap" }}>
+                        <button
+                          onClick={() => {
+                            setEditText(it.j.text);
+                            setEditingId(it.j.id);
+                          }}
+                          style={{ background: "none", border: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 13, padding: 0 }}
+                          aria-label="Edit entry"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          onClick={() => setConfirmId(it.j.id)}
+                          style={{ background: "none", border: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 13, padding: 0 }}
+                          aria-label="Delete entry"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    </div>
+                    {confirmId === it.j.id && (
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontSize: 13, color: "var(--rust)", flex: 1 }}>Delete this entry?</span>
+                        <button className="chip" style={{ background: "var(--rust)", borderColor: "var(--rust)", color: "#fff" }} onClick={() => remove(it.j.id)}>
+                          Yes, delete
+                        </button>
+                        <button className="chip" onClick={() => setConfirmId(null)}>Keep</button>
+                      </div>
+                    )}
+                    {it.j.prompt && (
+                      <div style={{ fontSize: 13, fontStyle: "italic", color: "var(--ink-soft)", marginBottom: 6 }}>
+                        In response to: “{it.j.prompt}”
+                      </div>
+                    )}
+                    <p style={{ margin: 0, lineHeight: 1.55, fontSize: 15, whiteSpace: "pre-wrap" }}>{it.j.text}</p>
+                  </>
+                )}
+              </div>
+            )
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ————— Threads ————— */
 
 function Threads() {
@@ -753,6 +1058,7 @@ function Threads() {
   const [selTags, setSelTags] = useState([]);
   const [selBooks, setSelBooks] = useState([]);
   const [pickBooks, setPickBooks] = useState(false);
+  const [includeJournal, setIncludeJournal] = useState(false);
 
   useEffect(() => {
     db.latestSynthesis()
@@ -781,7 +1087,7 @@ function Threads() {
             ? "No books with notes match your selection."
             : "Add notes or quotes to at least one book first."
         );
-      const material = books
+      let material = books
         .map((b) => {
           const lines = (b.entries || [])
             .map((e) => `  - (${e.type}${whereLabel(e) ? `, ${whereLabel(e)}` : ""}) ${e.text}${e.commentary ? ` | my commentary: ${e.commentary}` : ""}`)
@@ -789,8 +1095,17 @@ function Threads() {
           return `BOOK: "${b.title}"${b.author ? ` by ${b.author}` : ""}\n${lines}`;
         })
         .join("\n\n");
+      if (includeJournal) {
+        const journal = await db.listJournal();
+        if (journal.length)
+          material +=
+            "\n\nMY JOURNAL (personal entries, dated):\n" +
+            journal
+              .map((j) => `  - [${new Date(j.created_at).toLocaleDateString()}] ${j.text}${j.books?.title ? ` (about "${j.books.title}")` : ""}`)
+              .join("\n");
+      }
       const text = await askClaude(
-        `Here are my notes and quotes across the books I'm reading:\n\n${material}\n\nFind the common themes that run across multiple books and synthesize them. Prefer themes that connect 2+ books; a theme from one book is fine only if it's clearly central. Respond ONLY with JSON, no markdown fences or preamble: {"overview": "2-3 sentences on the throughline of my reading, in second person", "themes": [{"name": "short theme name", "synthesis": "2-3 sentences weaving the books' takes together", "sources": [{"book": "title", "excerpt": "short paraphrase or fragment of the relevant note/quote"}]}]}. 3-5 themes max.`
+        `Here are my notes and quotes across the books I'm reading${includeJournal ? ", along with entries from my personal journal" : ""}:\n\n${material}\n\nFind the common themes that run across multiple books and synthesize them. Prefer themes that connect 2+ books; a theme from one book is fine only if it's clearly central.${includeJournal ? " Journal entries can support or deepen a theme, but themes should still be anchored in the books." : ""} Respond ONLY with JSON, no markdown fences or preamble: {"overview": "2-3 sentences on the throughline of my reading, in second person", "themes": [{"name": "short theme name", "synthesis": "2-3 sentences weaving the books' takes together", "sources": [{"book": "title", "excerpt": "short paraphrase or fragment of the relevant note/quote"}]}]}. 3-5 themes max.`
       );
       const payload = parseJSON(text);
       const row = await db.saveSynthesis(payload);
@@ -825,6 +1140,12 @@ function Threads() {
             </div>
           </div>
         )}
+
+        <div style={{ marginBottom: 10 }}>
+          <button className={`chip ${includeJournal ? "chip-on" : ""}`} onClick={() => setIncludeJournal(!includeJournal)}>
+            {includeJournal ? "✓ " : ""}Include journal entries
+          </button>
+        </div>
 
         {shelf.length > 1 && (
           <div style={{ marginBottom: 12 }}>

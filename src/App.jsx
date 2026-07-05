@@ -95,7 +95,7 @@ function AuthScreen() {
     <div style={{ paddingTop: 60 }}>
       <img src="/icons/icon-192.png" alt="" style={{ width: 76, height: 76, display: "block", marginBottom: 16 }} />
       <h1 className="display" style={{ fontSize: 34, margin: "0 0 4px" }}>Commonplace</h1>
-      <div className="eyebrow" style={{ marginBottom: 28 }}>reading &amp; marginalia</div>
+      <div className="eyebrow" style={{ marginBottom: 28 }}>marginalia for the mind</div>
       <div className="card" style={{ padding: 18 }}>
         {sent ? (
           <p style={{ margin: 0, lineHeight: 1.55 }}>
@@ -191,12 +191,12 @@ function Shell() {
 function Header({ tab, setTab }) {
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <img src="/icons/icon-192.png" alt="" style={{ width: 34, height: 34 }} />
-          <h1 className="display" style={{ fontSize: 30, margin: 0 }}>Commonplace</h1>
-        </span>
-        <span className="eyebrow">reading &amp; marginalia</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <img src="/icons/icon-192.png" alt="" style={{ width: 42, height: 42 }} />
+        <div>
+          <h1 className="display" style={{ fontSize: 30, margin: 0, lineHeight: 1.15 }}>Commonplace</h1>
+          <span className="eyebrow">marginalia for the mind</span>
+        </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", marginTop: 14 }}>
         {[["library", "Library"], ["journal", "Journal"], ["threads", "Threads"]].map(([k, label]) => (

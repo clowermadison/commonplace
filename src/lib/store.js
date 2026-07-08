@@ -210,6 +210,57 @@ export async function saveRecap(payload) {
   return data;
 }
 
+/* ————— Reading sessions ————— */
+
+export async function activeSession() {
+  const { data, error } = await supabase
+    .from("reading_sessions")
+    .select("*, books(title, author)")
+    .is("ended_at", null)
+    .order("started_at", { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return data[0] || null;
+}
+
+export async function startSession({ book_id, goal_minutes, start_page = null }) {
+  const user_id = await uidOrThrow();
+  const { data, error } = await supabase
+    .from("reading_sessions")
+    .insert({ user_id, book_id, goal_minutes, start_page })
+    .select("*, books(title, author)")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function endSession(id, { end_page = null }) {
+  const { data, error } = await supabase
+    .from("reading_sessions")
+    .update({ end_page, ended_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("*, books(title, author)")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function discardSession(id) {
+  const { error } = await supabase.from("reading_sessions").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* Completed sessions, newest first, with a count of what was captured in each. */
+export async function listSessions() {
+  const { data, error } = await supabase
+    .from("reading_sessions")
+    .select("*, books(title, author), entries(count)")
+    .not("ended_at", "is", null)
+    .order("started_at", { ascending: false });
+  if (error) throw error;
+  return data.map((s) => ({ ...s, captureCount: s.entries?.[0]?.count ?? 0 }));
+}
+
 /* Everything a synthesis needs, in one query. */
 export async function allEntriesByBook() {
   const { data, error } = await supabase

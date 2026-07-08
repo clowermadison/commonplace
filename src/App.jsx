@@ -175,6 +175,8 @@ function Shell() {
           <Header tab={tab} setTab={setTab} />
           {tab === "library" ? (
             <Library books={books || []} onOpen={setOpenBookId} onChanged={refreshBooks} />
+          ) : tab === "sessions" ? (
+            <Sessions books={books || []} onBooksChanged={refreshBooks} />
           ) : tab === "journal" ? (
             <Journal books={books || []} />
           ) : tab === "threads" ? (
@@ -199,7 +201,7 @@ function Header({ tab, setTab }) {
         </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", marginTop: 14 }}>
-        {[["library", "Library"], ["journal", "Journal"], ["threads", "Threads"]].map(([k, label]) => (
+        {[["library", "Library"], ["sessions", "Sessions"], ["journal", "Journal"], ["threads", "Threads"]].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)} className={`tab ${tab === k ? "tab-on" : ""}`}>
             {label}
           </button>
@@ -1048,6 +1050,547 @@ function Journal({ books }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ————— Reading sessions ————— */
+
+const sessionMinutes = (s) => (new Date(s.ended_at) - new Date(s.started_at)) / 60000;
+const sessionPages = (s) =>
+  s.start_page != null && s.end_page != null && s.end_page >= s.start_page ? s.end_page - s.start_page : null;
+
+const fmtDuration = (mins) => {
+  const m = Math.round(mins);
+  if (m < 1) return "<1m";
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
+};
+
+const fmtClock = (secs) => {
+  const s = Math.max(0, Math.round(secs));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+const pageFromBookmark = (book) => {
+  const m = String(book?.bookmark || "").match(/\d+/);
+  return m ? m[0] : "";
+};
+
+const chime = () => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25].forEach((t) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.001, ctx.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.9);
+      o.start(ctx.currentTime + t);
+      o.stop(ctx.currentTime + t + 1);
+    });
+  } catch {
+    /* sound is a nicety — the timer UI already shows time is up */
+  }
+};
+
+function Sessions({ books, onBooksChanged }) {
+  const [active, setActive] = useState(undefined);
+  const [past, setPast] = useState([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    Promise.all([db.activeSession(), db.listSessions()])
+      .then(([a, p]) => {
+        setActive(a);
+        setPast(p);
+      })
+      .catch((e) => setError("Couldn't load your sessions: " + e.message));
+  }, []);
+
+  if (active === undefined && !error) return <Centered>Checking the reading clock…</Centered>;
+
+  return (
+    <div>
+      {error && <div style={{ color: "var(--rust)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+      {active ? (
+        <ActiveSession
+          session={active}
+          onDone={(row, captureCount) => {
+            setActive(null);
+            setPast([{ ...row, captureCount }, ...past]);
+            onBooksChanged();
+          }}
+          onDiscard={() => setActive(null)}
+        />
+      ) : (
+        <>
+          <SessionSetup books={books} onStarted={setActive} />
+          <SessionStats sessions={past} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ————— Start a session ————— */
+
+const DURATIONS = [10, 15, 20, 30, 45, 60];
+
+function SessionSetup({ books, onStarted }) {
+  const order = { reading: 0, wishlist: 1, finished: 2 };
+  const shelf = [...books].sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3));
+  const [bookId, setBookId] = useState(shelf[0]?.id || null);
+  const [minutes, setMinutes] = useState(20);
+  const [custom, setCustom] = useState("");
+  const [startPage, setStartPage] = useState(pageFromBookmark(shelf[0]));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const goal = custom.trim() ? parseInt(custom, 10) : minutes;
+  const goalOk = Number.isInteger(goal) && goal >= 1 && goal <= 600;
+
+  const start = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      onStarted(
+        await db.startSession({
+          book_id: bookId,
+          goal_minutes: goal,
+          start_page: startPage.trim() ? parseInt(startPage, 10) : null,
+        })
+      );
+    } catch (e) {
+      setError("Couldn't start the session: " + e.message);
+      setBusy(false);
+    }
+  };
+
+  if (books.length === 0)
+    return (
+      <div style={{ textAlign: "center", padding: "56px 24px", color: "var(--ink-soft)" }}>
+        <div className="display" style={{ fontSize: 22, color: "var(--ink)", marginBottom: 8 }}>
+          Nothing to read yet
+        </div>
+        Add a book to your shelf first — a session is a timed sit-down with one book.
+      </div>
+    );
+
+  return (
+    <div className="card" style={{ padding: 16, marginBottom: 18 }}>
+      <div className="eyebrow" style={{ marginBottom: 10 }}>Start a reading session</div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        {shelf.map((b) => (
+          <button
+            key={b.id}
+            className={`chip ${bookId === b.id ? "chip-on" : ""}`}
+            onClick={() => {
+              setBookId(b.id);
+              setStartPage(pageFromBookmark(b));
+            }}
+          >
+            {b.title}
+          </button>
+        ))}
+      </div>
+
+      <div className="eyebrow" style={{ marginBottom: 8 }}>For how long?</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        {DURATIONS.map((m) => (
+          <button
+            key={m}
+            className={`chip ${!custom.trim() && minutes === m ? "chip-on" : ""}`}
+            onClick={() => {
+              setMinutes(m);
+              setCustom("");
+            }}
+          >
+            {m} min
+          </button>
+        ))}
+        <input
+          className="field"
+          type="number"
+          inputMode="numeric"
+          min="1"
+          placeholder="Custom"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          style={{ width: 86, marginBottom: 0 }}
+        />
+      </div>
+
+      <input
+        className="field"
+        type="number"
+        inputMode="numeric"
+        min="0"
+        placeholder="Starting page (optional)"
+        value={startPage}
+        onChange={(e) => setStartPage(e.target.value)}
+      />
+
+      <button className="btn btn-primary" style={{ width: "100%" }} onClick={start} disabled={busy || !bookId || !goalOk}>
+        {busy ? "Opening the book…" : goalOk ? `▶ Start a ${goal}-minute session` : "Pick a length"}
+      </button>
+      {error && <div style={{ color: "var(--rust)", fontSize: 13, marginTop: 8 }}>{error}</div>}
+    </div>
+  );
+}
+
+/* ————— In a session ————— */
+
+function ActiveSession({ session, onDone, onDiscard }) {
+  const [now, setNow] = useState(Date.now());
+  const [captures, setCaptures] = useState([]);
+  const [note, setNote] = useState("");
+  const [notePage, setNotePage] = useState("");
+  const [finishing, setFinishing] = useState(false);
+  const [endPage, setEndPage] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const startMs = new Date(session.started_at).getTime();
+  const endMs = startMs + session.goal_minutes * 60000;
+  const rang = useRef(endMs <= Date.now()); // don't re-chime if the goal passed before this render
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const remaining = (endMs - now) / 1000;
+  const over = remaining <= 0;
+
+  useEffect(() => {
+    if (over && !rang.current) {
+      rang.current = true;
+      chime();
+    }
+  }, [over]);
+
+  const guard = (fn) => async (...args) => {
+    setError("");
+    try {
+      await fn(...args);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const saveNote = guard(async () => {
+    const row = await db.addEntry(session.book_id, {
+      type: "note",
+      text: note.trim(),
+      page: notePage.trim(),
+      chapter: "",
+      session_id: session.id,
+    });
+    setCaptures([row, ...captures]);
+    setNote("");
+    setNotePage("");
+  });
+
+  const saveQuote = guard(async (q) => {
+    const row = await db.addEntry(session.book_id, { ...q, session_id: session.id });
+    setCaptures([row, ...captures]);
+  });
+
+  const finish = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const end = endPage.trim() ? parseInt(endPage, 10) : null;
+      const row = await db.endSession(session.id, { end_page: end });
+      if (end != null && session.book_id) {
+        await db.updateBook(session.book_id, { bookmark: `p. ${end}` });
+        await db.addLog(session.book_id, `p. ${end}`);
+      }
+      onDone(row, captures.length);
+    } catch (e) {
+      setError("Couldn't finish the session: " + e.message);
+      setBusy(false);
+    }
+  };
+
+  const discard = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await db.discardSession(session.id);
+      onDiscard();
+    } catch (e) {
+      setError("Couldn't discard the session: " + e.message);
+      setBusy(false);
+    }
+  };
+
+  const pct = Math.min(100, ((now - startMs) / (endMs - startMs)) * 100);
+
+  return (
+    <div>
+      <div
+        className="card"
+        style={{ padding: "22px 16px 18px", marginBottom: 16, textAlign: "center", borderLeft: `6px solid ${clothFor(session.book_id || session.id)}` }}
+      >
+        <div className="eyebrow" style={{ marginBottom: 4, color: over ? "var(--gilt-deep)" : undefined }}>
+          {over ? "Time — nicely done" : "Reading session"}
+        </div>
+        <div className="display" style={{ fontSize: 20, marginBottom: 2 }}>{session.books?.title || "Your book"}</div>
+        <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 14 }}>
+          {session.goal_minutes}-minute goal
+          {session.start_page != null ? ` · from p. ${session.start_page}` : ""}
+        </div>
+
+        <div
+          className="display"
+          style={{ fontSize: 54, lineHeight: 1, fontVariantNumeric: "tabular-nums", color: over ? "var(--gilt-deep)" : "var(--ink)" }}
+        >
+          {over ? `+${fmtClock(-remaining)}` : fmtClock(remaining)}
+        </div>
+        {over && (
+          <div style={{ fontSize: 13, color: "var(--ink-soft)", marginTop: 6 }}>
+            Goal reached — keep reading, or finish up below.
+          </div>
+        )}
+
+        <div style={{ height: 6, background: "var(--paper-dim)", borderRadius: 3, margin: "16px 0 14px", overflow: "hidden" }}>
+          <div
+            style={{ width: `${pct}%`, height: "100%", background: over ? "var(--gilt)" : "var(--cloth)", borderRadius: 3, transition: "width 1s linear" }}
+          />
+        </div>
+
+        {finishing ? (
+          <div>
+            <input
+              className="field"
+              type="number"
+              inputMode="numeric"
+              min="0"
+              placeholder={session.start_page != null ? `Ending page (you started at ${session.start_page})` : "Ending page (optional)"}
+              value={endPage}
+              onChange={(e) => setEndPage(e.target.value)}
+              autoFocus
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <button className="btn btn-primary" onClick={finish} disabled={busy}>
+                {busy ? "Closing the book…" : "Save session"}
+              </button>
+              <button className="btn" onClick={() => setFinishing(false)}>Keep reading</button>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 8 }}>
+              Your ending page moves the book's 🔖 bookmark too.
+            </div>
+          </div>
+        ) : confirmDiscard ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, color: "var(--rust)" }}>Discard this session? Anything you captured stays on the book.</span>
+            <button className="chip" style={{ background: "var(--rust)", borderColor: "var(--rust)", color: "#fff" }} onClick={discard} disabled={busy}>
+              Yes, discard
+            </button>
+            <button className="chip" onClick={() => setConfirmDiscard(false)}>Keep going</button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+            <button className={`btn ${over ? "btn-gilt" : "btn-primary"}`} onClick={() => setFinishing(true)}>
+              Finish session
+            </button>
+            <button className="btn" onClick={() => setConfirmDiscard(true)}>Discard</button>
+          </div>
+        )}
+        {error && <div style={{ color: "var(--rust)", fontSize: 13, marginTop: 10 }}>{error}</div>}
+      </div>
+
+      <QuoteCapture onSave={saveQuote} />
+
+      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+        <div className="eyebrow" style={{ marginBottom: 8 }}>Jot a note</div>
+        <textarea className="field" rows={2} placeholder="A thought while you read…" value={note} onChange={(e) => setNote(e.target.value)} />
+        <div style={{ display: "flex", gap: 8 }}>
+          <input className="field" style={{ flex: 1 }} placeholder="Page (optional)" value={notePage} onChange={(e) => setNotePage(e.target.value)} />
+          <button className="btn btn-primary" style={{ marginBottom: 10 }} disabled={!note.trim()} onClick={saveNote}>
+            Save
+          </button>
+        </div>
+      </div>
+
+      {captures.length > 0 && (
+        <>
+          <div className="eyebrow section-head" style={{ marginBottom: 10 }}>
+            Captured this session
+            <span style={{ fontWeight: 400 }}>{captures.length}</span>
+          </div>
+          {captures.map((c) => (
+            <div key={c.id} className="card" style={{ padding: "10px 14px", marginBottom: 8 }}>
+              <span className="eyebrow" style={{ color: c.type === "quote" ? "var(--gilt-deep)" : "var(--ink-soft)" }}>
+                {c.type === "quote" ? "Quote" : "Note"}
+                {whereLabel(c) ? ` · ${whereLabel(c)}` : ""}
+              </span>
+              <p style={{ margin: "4px 0 0", fontSize: 14, lineHeight: 1.5, fontStyle: c.type === "quote" ? "italic" : "normal" }}>
+                {c.text}
+              </p>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ————— Session stats ————— */
+
+function Stat({ label, value }) {
+  return (
+    <div className="card" style={{ padding: "12px 6px", textAlign: "center" }}>
+      <div className="display" style={{ fontSize: 22 }}>{value}</div>
+      <div className="eyebrow" style={{ marginTop: 2, fontSize: 10 }}>{label}</div>
+    </div>
+  );
+}
+
+function SessionStats({ sessions }) {
+  if (sessions.length === 0)
+    return (
+      <div style={{ textAlign: "center", color: "var(--ink-soft)", padding: "32px 24px", fontSize: 14 }}>
+        <div className="display" style={{ fontSize: 20, color: "var(--ink)", marginBottom: 8 }}>No sessions yet</div>
+        Set the timer above and read — your stats will gather here.
+      </div>
+    );
+
+  const totalMin = sessions.reduce((a, s) => a + sessionMinutes(s), 0);
+  const totalPages = sessions.reduce((a, s) => a + (sessionPages(s) || 0), 0);
+
+  const daySet = new Set(sessions.map((s) => new Date(s.started_at).toDateString()));
+  let streak = 0;
+  const cursor = new Date();
+  if (!daySet.has(cursor.toDateString())) cursor.setDate(cursor.getDate() - 1); // today isn't over yet
+  while (daySet.has(cursor.toDateString())) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  const days = [...Array(14)].map((_, i) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - (13 - i));
+    return d;
+  });
+  const perDay = days.map((d) =>
+    sessions
+      .filter((s) => new Date(s.started_at).toDateString() === d.toDateString())
+      .reduce((a, s) => a + sessionMinutes(s), 0)
+  );
+  const maxMin = Math.max(...perDay, 1);
+  const maxIdx = perDay.indexOf(Math.max(...perDay));
+
+  const byBook = [];
+  for (const s of sessions) {
+    const key = s.book_id || "removed";
+    let row = byBook.find((r) => r.key === key);
+    if (!row) byBook.push((row = { key, title: s.books?.title || "A removed book", mins: 0, pages: 0, count: 0 }));
+    row.mins += sessionMinutes(s);
+    row.pages += sessionPages(s) || 0;
+    row.count++;
+  }
+  byBook.sort((a, b) => b.mins - a.mins);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 16 }}>
+        <Stat label="Sessions" value={sessions.length} />
+        <Stat label="Time read" value={fmtDuration(totalMin)} />
+        <Stat label="Pages" value={totalPages} />
+        <Stat label="Day streak" value={streak} />
+      </div>
+
+      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+        <div className="eyebrow" style={{ marginBottom: 12 }}>Minutes read — last two weeks</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 86 }}>
+          {days.map((d, i) => {
+            const m = perDay[i];
+            return (
+              <div
+                key={i}
+                title={`${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} — ${Math.round(m)} min`}
+                style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}
+              >
+                {i === maxIdx && m > 0 && (
+                  <div style={{ fontSize: 10, color: "var(--ink-soft)", marginBottom: 2, whiteSpace: "nowrap" }}>{Math.round(m)}m</div>
+                )}
+                <div
+                  style={{
+                    width: "100%",
+                    height: m > 0 ? Math.max(4, (m / maxMin) * 64) : 2,
+                    background: m > 0 ? "var(--cloth)" : "var(--line)",
+                    borderRadius: "4px 4px 0 0",
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 3, marginTop: 4 }}>
+          {days.map((d, i) => (
+            <div key={i} style={{ flex: 1, textAlign: "center", fontSize: 9.5, color: "var(--ink-soft)" }}>
+              {d.toLocaleDateString(undefined, { weekday: "narrow" })}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+        <div className="eyebrow" style={{ marginBottom: 10 }}>By book</div>
+        {byBook.map((b) => (
+          <div key={b.key} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, marginBottom: 3, gap: 8 }}>
+              <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.title}</span>
+              <span style={{ color: "var(--ink-soft)", whiteSpace: "nowrap" }}>
+                {fmtDuration(b.mins)} · {b.count} {b.count === 1 ? "session" : "sessions"}
+                {b.pages ? ` · ${b.pages} pages` : ""}
+              </span>
+            </div>
+            <div style={{ height: 5, background: "var(--paper-dim)", borderRadius: 3 }}>
+              <div style={{ width: `${(b.mins / byBook[0].mins) * 100}%`, height: "100%", background: clothFor(b.key), borderRadius: 3 }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="eyebrow section-head" style={{ marginBottom: 10 }}>
+        Recent sessions
+        <span style={{ fontWeight: 400 }}>{sessions.length}</span>
+      </div>
+      {sessions.slice(0, 10).map((s) => {
+        const pages = sessionPages(s);
+        return (
+          <div
+            key={s.id}
+            className="card"
+            style={{ padding: "10px 14px", marginBottom: 8, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {s.books?.title || "A removed book"}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtWhen(s.started_at)}</div>
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--ink-soft)", whiteSpace: "nowrap", textAlign: "right" }}>
+              <span style={{ color: "var(--ink)", fontWeight: 600 }}>{fmtDuration(sessionMinutes(s))}</span>
+              {pages != null ? ` · pp. ${s.start_page}–${s.end_page}` : ""}
+              {s.captureCount ? ` · ${s.captureCount} captured` : ""}
+            </div>
+          </div>
+        );
+      })}
+      {sessions.length > 10 && (
+        <div style={{ fontSize: 12, color: "var(--ink-soft)", textAlign: "center" }}>+ {sessions.length - 10} earlier</div>
+      )}
     </div>
   );
 }
